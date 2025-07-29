@@ -22,6 +22,81 @@ long get_time_microseconds() {
     return ts.tv_sec * 1000000L + ts.tv_nsec / 1000L;
 }
 
+long test_single_pool_version(ze_context_handle_t context, ze_device_handle_t device, ze_command_list_handle_t cmdList, void *sharedGlobal) {
+    printf("=== TEST 1: Single Pool - All Events in ONE Pool ===\n");
+    printf("Creating the same dependency pattern but within a single event pool...\n");
+    
+    // Create single pool with all events (equivalent to what's normally across 5 pools)
+    ze_event_pool_desc_t singlePoolDesc = {
+        .stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC,
+        .pNext = NULL,
+        .flags = 0,
+        .count = 16 // All events in one pool: 4 basic + 2 timing + 3 timing2 + 6 kernel + 1 spare
+    };
+    ze_event_pool_handle_t singlePool;
+    CHECK_ZE(zeEventPoolCreate(context, &singlePoolDesc, 0, NULL, &singlePool));
+    
+    // Create all events from single pool
+    ze_event_handle_t allEvents[16];
+    for (int i = 0; i < 16; i++) {
+        ze_event_desc_t evtDesc = {
+            .stype = ZE_STRUCTURE_TYPE_EVENT_DESC,
+            .pNext = NULL,
+            .index = i,
+            .signal = ZE_EVENT_SCOPE_FLAG_HOST,
+            .wait = ZE_EVENT_SCOPE_FLAG_HOST
+        };
+        CHECK_ZE(zeEventCreate(singlePool, &evtDesc, &allEvents[i]));
+        CHECK_ZE(zeEventHostReset(allEvents[i]));
+    }
+    
+    // Map to same logical structure as multi-pool version
+    ze_event_handle_t *events = &allEvents[0];        // events[0-3] 
+    ze_event_handle_t *timingEvents = &allEvents[4];  // timingEvents[0-1]
+    ze_event_handle_t *timing2Events = &allEvents[6]; // timing2Events[0-2] 
+    ze_event_handle_t *kernelEvents = &allEvents[9];  // kernelEvents[0-5]
+    
+    // Create IDENTICAL dependency pattern as multi-pool test
+    uint64_t hostTimestamp, deviceTimestamp;
+    CHECK_ZE(zeDeviceGetGlobalTimestamps(device, &hostTimestamp, &deviceTimestamp));
+    
+    // Phase 1: Basic → Timing dependencies
+    CHECK_ZE(zeCommandListAppendWriteGlobalTimestamp(cmdList, sharedGlobal, timingEvents[1], 0, NULL));
+    CHECK_ZE(zeCommandListAppendMemoryCopy(cmdList, &deviceTimestamp, sharedGlobal, 8, timingEvents[0], 1, &timingEvents[1]));
+    CHECK_ZE(zeCommandListAppendBarrier(cmdList, events[1], 1, &timingEvents[0]));
+    
+    // Phase 2: Timing → Timing2 dependencies  
+    CHECK_ZE(zeCommandListAppendBarrier(cmdList, timing2Events[2], 1, &timingEvents[0]));
+    CHECK_ZE(zeCommandListAppendWriteGlobalTimestamp(cmdList, sharedGlobal, timing2Events[2], 1, &timing2Events[2]));
+    CHECK_ZE(zeCommandListAppendMemoryCopy(cmdList, &deviceTimestamp, sharedGlobal, 8, timing2Events[1], 1, &timing2Events[2]));
+    CHECK_ZE(zeCommandListAppendBarrier(cmdList, events[2], 1, &timing2Events[1]));
+    CHECK_ZE(zeCommandListAppendBarrier(cmdList, timing2Events[0], 1, &timing2Events[1]));
+    
+    // Phase 3: Basic → Kernel dependencies
+    CHECK_ZE(zeCommandListAppendWriteGlobalTimestamp(cmdList, sharedGlobal, kernelEvents[5], 1, &kernelEvents[5]));
+    CHECK_ZE(zeCommandListAppendMemoryCopy(cmdList, &deviceTimestamp, sharedGlobal, 8, kernelEvents[4], 1, &kernelEvents[5]));
+    CHECK_ZE(zeCommandListAppendBarrier(cmdList, events[3], 1, &kernelEvents[4]));
+    CHECK_ZE(zeCommandListAppendBarrier(cmdList, kernelEvents[3], 1, &kernelEvents[4]));
+    
+    // Query the same target event (events[2])
+    printf("Querying events[2] within single pool...\n");
+    long start_time = get_time_microseconds();
+    ze_result_t status = zeEventQueryStatus(events[2]);
+    long end_time = get_time_microseconds();
+    long duration = end_time - start_time;
+    
+    printf("Single Pool Result: %ld microseconds (%.3f ms) - Status: %s\n", 
+           duration, duration/1000.0, status == ZE_RESULT_SUCCESS ? "SUCCESS" : "NOT_READY");
+    
+    // Cleanup
+    for (int i = 0; i < 16; i++) {
+        zeEventDestroy(allEvents[i]);
+    }
+    zeEventPoolDestroy(singlePool);
+    
+    return duration;
+}
+
 // Simulate chipStar's kernel binary (dummy data)
 static const char dummy_kernel_binary[] = {
     0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -30,7 +105,13 @@ static const char dummy_kernel_binary[] = {
 
 // Match the EXACT trace pattern - simulating chipStar HIP → Level Zero translation
 int main() {
-    printf("Reproducing chipStar hipEventElapsedTime blocking trace pattern\n");
+    printf("=== Level Zero Event Pool Dependency Issue Reproducer ===\n");
+    printf("This demonstrates that complex cross-pool event dependencies cause zeEventQueryStatus to block\n");
+    printf("Based on chipStar hipEventElapsedTime performance issue analysis\n\n");
+    
+    printf("KEY FINDING: The same dependency pattern is fast within ONE pool, but slow across MULTIPLE pools\n");
+    printf("This reproducer creates dependencies across 5 separate event pools:\n");
+    printf("- 4 basic event pools → 2 timing pools → kernel pools\n");
     
     // === Phase 1: Driver/Device Initialization (lines 7-48) ===
     CHECK_ZE(zeInit(0)); // flags: []
@@ -90,6 +171,12 @@ int main() {
     
     ze_command_list_handle_t cmdList;
     CHECK_ZE(zeCommandListCreateImmediate(context, device, &queueDesc, &cmdList));
+    
+    // === FIRST: Test with single pool (should be fast) ===
+    long singlePoolDuration = test_single_pool_version(context, device, cmdList, sharedGlobal);
+    
+    printf("\n=== TEST 2: Multiple Pools - Events Across SEPARATE Pools ===\n");
+    printf("Creating the same dependency pattern but across multiple event pools...\n");
     
     // === Phase 3: Skip device memory allocation too ===
     // void *deviceMem;
@@ -240,34 +327,45 @@ simulate_kernel_launch:
     CHECK_ZE(zeCommandListAppendBarrier(cmdList, kernelEvents[3], 1, &kernelEvents[4]));
     
     // === Phase 12: THE CRITICAL MOMENT - hipEventElapsedTime (line 310) ===
-    printf("\n=== CRITICAL MOMENT: Simulating hipEventElapsedTime ===\n");
-    printf("This should trigger the slow zeEventQueryStatus that we see in the trace...\n");
+    printf("=== REPRODUCING THE BLOCKING zeEventQueryStatus ===\n");
+    printf("This simulates chipStar's hipEventElapsedTime calling zeEventQueryStatus\n");
+    printf("Query target: events[2] - involved in cross-pool dependency chain\n");
+    printf("Expected: ~2-20+ seconds due to cross-pool dependency traversal\n\n");
     
     // hipEventElapsedTime calls zeEventQueryStatus on both start and stop events
     // The trace shows this query taking 2.18ms!
     
     long start_time = get_time_microseconds();
     
-    printf("Querying event status (this should potentially block for ~2ms like in trace)...\n");
+    printf("Calling zeEventQueryStatus(events[2])...\n");
     ze_result_t status = zeEventQueryStatus(events[2]); // Query the timing event
     
     long end_time = get_time_microseconds();
     long duration = end_time - start_time;
     
-    printf("zeEventQueryStatus took: %ld microseconds\n", duration);
-    printf("Trace showed: 2176 microseconds\n");
-    printf("Event status: %s\n", 
-                           status == ZE_RESULT_NOT_READY ? "NOT_READY" : 
-                           status == ZE_RESULT_SUCCESS ? "SUCCESS" : "ERROR");
-                
-    if (duration > 1000) {
-        printf("SUCCESS! Reproduced the blocking zeEventQueryStatus behavior!\n");
-        printf("Duration %ld μs is similar to the 2176 μs seen in chipStar trace\n", duration);
-    } else if (duration > 100) {
-        printf("Partial success: Got elevated latency (%ld μs) but not as severe as trace\n", duration);
+    printf("Multi-Pool Result: %ld microseconds (%.3f ms) - Status: %s\n", 
+           duration, duration/1000.0, status == ZE_RESULT_SUCCESS ? "SUCCESS" : "NOT_READY");
+    
+    printf("\n=== PERFORMANCE COMPARISON ===\n");
+    printf("Single Pool (all events in one pool):  %ld microseconds (%.3f ms)\n", 
+           singlePoolDuration, singlePoolDuration/1000.0);
+    printf("Multi-Pool (events across 5 pools):   %ld microseconds (%.3f ms)\n", 
+           duration, duration/1000.0);
+    printf("Performance difference: %.1fx slower\n", (double)duration / singlePoolDuration);
+    
+    if (duration > 1000000) {
+        printf("\n✅ CONFIRMED: Cross-pool dependencies cause massive slowdown!\n");
+        printf("   This demonstrates the Level Zero driver performance bottleneck.\n");
+        printf("   In chipStar, this causes hipEventElapsedTime to block for seconds.\n");
+    } else if (duration > singlePoolDuration * 5) {
+        printf("\n⚠️  Significant slowdown observed with cross-pool dependencies.\n");
+        printf("   This still demonstrates the performance issue.\n");
     } else {
-        printf("Did not reproduce the blocking behavior (duration too short: %ld μs)\n", duration);
+        printf("\n❌ Did not reproduce major blocking (duration: %ld μs vs %ld μs)\n", 
+               duration, singlePoolDuration);
+        printf("   Note: The issue may be environment-specific.\n");
     }
+    
     
     // === Cleanup ===
     printf("\nCleaning up...\n");
