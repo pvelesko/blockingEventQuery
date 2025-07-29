@@ -30,7 +30,7 @@ long test_single_pool_version(ze_context_handle_t context, ze_device_handle_t de
     ze_event_pool_desc_t singlePoolDesc = {
         .stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC,
         .pNext = NULL,
-        .flags = 0,
+        .flags = ZE_EVENT_POOL_FLAG_HOST_VISIBLE,
         .count = 16 // All events in one pool: 4 basic + 2 timing + 3 timing2 + 6 kernel + 1 spare
     };
     ze_event_pool_handle_t singlePool;
