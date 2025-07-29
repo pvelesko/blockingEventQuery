@@ -93,38 +93,18 @@ int main() {
     
     // === Phase 3: hipMalloc → zeMemAllocDevice (lines 68-71) ===
     void *deviceMem;
-    CHECK_ZE(zeMemAllocDevice(context, &deviceAllocDesc, 40000000, 0, device, &deviceMem));
+    CHECK_ZE(zeMemAllocDevice(context, &deviceAllocDesc, 1024, 0, device, &deviceMem)); // 1KB instead of 40MB
     
     // === Phase 4: hipHostMalloc → zeMemAllocHost (lines 72-75) ===
     void *hostMem;
-    CHECK_ZE(zeMemAllocHost(context, &hostAllocDesc, 40000000, 4096, &hostMem));
+    CHECK_ZE(zeMemAllocHost(context, &hostAllocDesc, 1024, 4096, &hostMem)); // 1KB instead of 40MB
     
-    // === Phase 6: hipMemset → zeMemoryFill (lines 84-99) ===
-    ze_event_pool_desc_t eventPoolDesc = {
-        .stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC,
-        .pNext = NULL,
-        .flags = ZE_EVENT_POOL_FLAG_HOST_VISIBLE,
-        .count = 1
-    };
-    ze_event_pool_handle_t memsetEventPool;
-    CHECK_ZE(zeEventPoolCreate(context, &eventPoolDesc, 0, NULL, &memsetEventPool));
-    
-    ze_event_desc_t eventDesc = {
-        .stype = ZE_STRUCTURE_TYPE_EVENT_DESC,
-        .pNext = NULL,
-        .index = 0,
-        .signal = ZE_EVENT_SCOPE_FLAG_HOST,
-        .wait = ZE_EVENT_SCOPE_FLAG_HOST
-    };
-    ze_event_handle_t memsetEvent;
-    CHECK_ZE(zeEventCreate(memsetEventPool, &eventDesc, &memsetEvent));
-    CHECK_ZE(zeEventHostReset(memsetEvent));
-    
-    // Skip actual memset to simplify
+    // === Phase 6: Skip memset entirely ===
+    // Removed memset event pool since we don't use it
     
     // === Phase 7: hipEventCreate events (lines 100-123) ===
-    ze_event_pool_handle_t eventPools[4];
-    ze_event_handle_t events[4];
+    ze_event_pool_handle_t eventPools[4]; // Need all 4
+    ze_event_handle_t events[4]; // Need all 4
     
     for (int i = 0; i < 4; i++) {
         ze_event_pool_desc_t poolDesc = {
@@ -184,13 +164,13 @@ int main() {
         .stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC,
         .pNext = NULL,
         .flags = ZE_EVENT_POOL_FLAG_HOST_VISIBLE,
-        .count = 4
+        .count = 3 // Try reducing from 4 to 3
     };
     ze_event_pool_handle_t timing2Pool;
     CHECK_ZE(zeEventPoolCreate(context, &timing2PoolDesc, 0, NULL, &timing2Pool));
     
-    ze_event_handle_t timing2Events[4];
-    for (int i = 0; i < 4; i++) {
+    ze_event_handle_t timing2Events[3]; // Reduce from 4 to 3
+    for (int i = 0; i < 3; i++) {
         ze_event_desc_t timing2Desc = {
             .stype = ZE_STRUCTURE_TYPE_EVENT_DESC,
             .pNext = NULL,
@@ -202,12 +182,12 @@ int main() {
         CHECK_ZE(zeEventHostReset(timing2Events[i]));
     }
     
-    CHECK_ZE(zeCommandListAppendBarrier(cmdList, timing2Events[3], 1, &timingEvents[0]));
+    CHECK_ZE(zeCommandListAppendBarrier(cmdList, timing2Events[2], 1, &timingEvents[0])); // Use [2] instead of [3]
     
     CHECK_ZE(zeEventHostReset(events[2])); // Second hipEventRecord
     
     CHECK_ZE(zeDeviceGetGlobalTimestamps(device, &hostTimestamp, &deviceTimestamp));
-    CHECK_ZE(zeCommandListAppendWriteGlobalTimestamp(cmdList, sharedGlobal, timing2Events[2], 1, &timing2Events[3]));
+    CHECK_ZE(zeCommandListAppendWriteGlobalTimestamp(cmdList, sharedGlobal, timing2Events[2], 1, &timing2Events[2]));
     CHECK_ZE(zeCommandListAppendMemoryCopy(cmdList, &deviceTimestamp, sharedGlobal, 8, timing2Events[1], 1, &timing2Events[2]));
     CHECK_ZE(zeCommandListAppendBarrier(cmdList, events[2], 1, &timing2Events[1]));
     CHECK_ZE(zeCommandListAppendBarrier(cmdList, timing2Events[0], 1, &timing2Events[1]));
@@ -224,13 +204,13 @@ simulate_kernel_launch:
         .stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC,
         .pNext = NULL,
         .flags = ZE_EVENT_POOL_FLAG_HOST_VISIBLE,
-        .count = 8
+        .count = 6 // Reduce from 8 to 6
     };
     ze_event_pool_handle_t kernelPool;
     CHECK_ZE(zeEventPoolCreate(context, &kernelPoolDesc, 0, NULL, &kernelPool));
     
-    ze_event_handle_t kernelEvents[8];
-    for (int i = 0; i < 8; i++) {
+    ze_event_handle_t kernelEvents[6]; // Reduce from 8 to 6
+    for (int i = 0; i < 6; i++) {
         ze_event_desc_t kernelEventDesc = {
             .stype = ZE_STRUCTURE_TYPE_EVENT_DESC,
             .pNext = NULL,
@@ -241,8 +221,7 @@ simulate_kernel_launch:
         CHECK_ZE(zeEventCreate(kernelPool, &kernelEventDesc, &kernelEvents[i]));
     }
     
-    // Reset some events
-    CHECK_ZE(zeEventHostReset(kernelEvents[6]));
+    // Reset some events - remove unused ones
     CHECK_ZE(zeEventHostReset(kernelEvents[5]));
     CHECK_ZE(zeEventHostReset(kernelEvents[4]));
     CHECK_ZE(zeEventHostReset(kernelEvents[3]));
@@ -252,7 +231,7 @@ simulate_kernel_launch:
     
     // Simplified timing operations  
     CHECK_ZE(zeDeviceGetGlobalTimestamps(device, &hostTimestamp, &deviceTimestamp));
-    CHECK_ZE(zeCommandListAppendWriteGlobalTimestamp(cmdList, sharedGlobal, kernelEvents[5], 1, &kernelEvents[6]));
+    CHECK_ZE(zeCommandListAppendWriteGlobalTimestamp(cmdList, sharedGlobal, kernelEvents[5], 1, &kernelEvents[5])); // Self-dependency
     CHECK_ZE(zeCommandListAppendMemoryCopy(cmdList, &deviceTimestamp, sharedGlobal, 8, kernelEvents[4], 1, &kernelEvents[5]));
     CHECK_ZE(zeCommandListAppendBarrier(cmdList, events[3], 1, &kernelEvents[4]));
     CHECK_ZE(zeCommandListAppendBarrier(cmdList, kernelEvents[3], 1, &kernelEvents[4]));
@@ -291,7 +270,7 @@ simulate_kernel_launch:
     printf("\nCleaning up...\n");
     
     // Cleanup events
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 6; i++) {
         zeEventDestroy(kernelEvents[i]);
     }
     zeEventPoolDestroy(kernelPool);
@@ -306,13 +285,10 @@ simulate_kernel_launch:
     }
     zeEventPoolDestroy(timingPool);
     
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         zeEventDestroy(timing2Events[i]);
     }
     zeEventPoolDestroy(timing2Pool);
-    
-    zeEventDestroy(memsetEvent);
-    zeEventPoolDestroy(memsetEventPool);
     
     // Cleanup kernels and module
     // The original code had a moduleResult and module variable, but they were not defined.
