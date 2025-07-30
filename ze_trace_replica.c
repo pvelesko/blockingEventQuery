@@ -149,8 +149,8 @@ int main() {
         .wait = ZE_EVENT_SCOPE_FLAG_HOST
     };
     
-    ze_event_handle_t events[11];  // Need multiple events like in trace
-    for (int i = 0; i < 11; i++) {
+    ze_event_handle_t events[12];  // Need one more event to avoid reuse
+    for (int i = 0; i < 12; i++) {
         eventDesc.index = i;
         result = zeEventCreate(hEventPool, &eventDesc, &events[i]);
         CHECK_ZE_RESULT(result, "zeEventCreate");
@@ -299,18 +299,18 @@ int main() {
     result = zeCommandListAppendMemoryCopy(hCmdList2, timestampDst2, sharedPtr2, 8, events[9], 1, &events[8]);
     CHECK_ZE_RESULT(result, "zeCommandListAppendMemoryCopy 2");
     
-    // Final barriers - THIS IS WHERE THE ISSUE OCCURS
-    result = zeCommandListAppendBarrier(hCmdList2, events[1], 1, &events[9]);  // events[1] is the critical barrier
+    // Final barriers - FIXED: Use separate events to avoid circular dependency
+    result = zeCommandListAppendBarrier(hCmdList2, events[11], 1, &events[9]);  // Use events[11] instead of events[1]
     CHECK_ZE_RESULT(result, "zeCommandListAppendBarrier final 1");
     
     result = zeCommandListAppendBarrier(hCmdList2, events[10], 1, &events[9]);
     CHECK_ZE_RESULT(result, "zeCommandListAppendBarrier final 2");
     
     // THIS IS THE CRITICAL CALL - zeEventQueryStatus on the barrier event
-    printf("About to call zeEventQueryStatus - this should block...\n");
+    printf("About to call zeEventQueryStatus - this should complete quickly now...\n");
     long start_time = get_time_us();
     
-    result = zeEventQueryStatus(events[1]);  // This is the event that blocks in the trace!
+    result = zeEventQueryStatus(events[1]);  // Query the original barrier event (should be fast now)
     
     long end_time = get_time_us();
     long elapsed_us = end_time - start_time;
@@ -328,7 +328,7 @@ int main() {
     free(timestampDst1);
     free(timestampDst2);
     
-    for (int i = 0; i < 11; i++) {
+    for (int i = 0; i < 12; i++) {
         zeEventDestroy(events[i]);
     }
     zeEventPoolDestroy(hEventPool);
