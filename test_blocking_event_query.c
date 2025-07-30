@@ -74,11 +74,40 @@ int main() {
     void *hostMem;
     CHECK_ZE(zeMemAllocHost(context, &hostAllocDesc, 40000000, 4096, &hostMem));
     
-    // Create command queue and immediate command list
+    // Query command queue group properties to find copy engines
+    uint32_t queueGroupCount = 0;
+    CHECK_ZE(zeDeviceGetCommandQueueGroupProperties(device, &queueGroupCount, NULL));
+    
+    ze_command_queue_group_properties_t *queueGroupProps = 
+        (ze_command_queue_group_properties_t*)malloc(queueGroupCount * sizeof(ze_command_queue_group_properties_t));
+    for (uint32_t i = 0; i < queueGroupCount; i++) {
+        queueGroupProps[i].stype = ZE_STRUCTURE_TYPE_COMMAND_QUEUE_GROUP_PROPERTIES;
+        queueGroupProps[i].pNext = NULL;
+    }
+    CHECK_ZE(zeDeviceGetCommandQueueGroupProperties(device, &queueGroupCount, queueGroupProps));
+    
+    printf("Found %d command queue groups:\n", queueGroupCount);
+    uint32_t computeOrdinal = 0, copyOrdinal = UINT32_MAX;
+    
+    for (uint32_t i = 0; i < queueGroupCount; i++) {
+        printf("  Group %d: flags=0x%x, numQueues=%d", i, queueGroupProps[i].flags, queueGroupProps[i].numQueues);
+        
+        if (queueGroupProps[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE) {
+            printf(" [COMPUTE]");
+            computeOrdinal = i;
+        }
+        if (queueGroupProps[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COPY) {
+            printf(" [COPY]");
+            if (copyOrdinal == UINT32_MAX) copyOrdinal = i;
+        }
+        printf("\n");
+    }
+    
+    // Create compute queue (using existing logic)
     ze_command_queue_desc_t queueDesc = {
         .stype = ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
         .pNext = NULL,
-        .ordinal = 0,
+        .ordinal = computeOrdinal,
         .index = 0,
         .flags = 0,
         .mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS,
@@ -89,6 +118,43 @@ int main() {
     
     ze_command_list_handle_t cmdList;
     CHECK_ZE(zeCommandListCreateImmediate(context, device, &queueDesc, &cmdList));
+    
+    // Try to create a copy queue if available
+    ze_command_queue_handle_t copyQueue = NULL;
+    ze_command_list_handle_t copyCmdList = NULL;
+    
+    if (copyOrdinal != UINT32_MAX) {
+        printf("Creating dedicated copy queue on ordinal %d...\n", copyOrdinal);
+        
+        ze_command_queue_desc_t copyQueueDesc = {
+            .stype = ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
+            .pNext = NULL,
+            .ordinal = copyOrdinal,
+            .index = 0,
+            .flags = 0,
+            .mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS,
+            .priority = ZE_COMMAND_QUEUE_PRIORITY_NORMAL
+        };
+        
+        ze_result_t result = zeCommandQueueCreate(context, device, &copyQueueDesc, &copyQueue);
+        if (result == ZE_RESULT_SUCCESS) {
+            printf("✅ Successfully created copy queue!\n");
+            
+            // Create immediate command list for copy operations
+            result = zeCommandListCreateImmediate(context, device, &copyQueueDesc, &copyCmdList);
+            if (result == ZE_RESULT_SUCCESS) {
+                printf("✅ Successfully created copy command list!\n");
+            } else {
+                printf("❌ Failed to create copy command list: %d\n", result);
+            }
+        } else {
+            printf("❌ Failed to create copy queue: %d\n", result);
+        }
+    } else {
+        printf("❌ No dedicated COPY queue group found\n");
+    }
+    
+    free(queueGroupProps);
     
     // === CREATE MASSIVE COMPLEXITY ===
     printf("Creating large event pool with 1000 events...\n");
@@ -263,6 +329,9 @@ int main() {
     zeMemFree(context, sharedGlobal);
     zeMemFree(context, deviceMem);
     zeMemFree(context, hostMem);
+    
+    if (copyCmdList) zeCommandListDestroy(copyCmdList);
+    if (copyQueue) zeCommandQueueDestroy(copyQueue);
     
     zeCommandListDestroy(cmdList);
     zeCommandQueueDestroy(queue);
