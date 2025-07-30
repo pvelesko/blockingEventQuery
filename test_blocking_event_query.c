@@ -179,7 +179,7 @@ int main() {
     for (int i = 50; i < MAX_EVENTS - 50; i += 10) {
         for (int j = 1; j < 5; j++) {
             if (i + j * 10 < MAX_EVENTS) {
-                CHECK_ZE(zeCommandListAppendBarrier(cmdList, events[i], 1, &events[i + j * 10]));
+                CHECK_ZE(zeCommandListAppendBarrier(cmdList, events[i + j * 10], 1, &events[i]));
             }
         }
     }
@@ -204,7 +204,7 @@ int main() {
     printf("Creating final complex web around target event %d...\n", targetEvent);
     
     for (int i = targetEvent - 50; i < targetEvent + 50; i++) {
-        if (i > 0 && i < MAX_EVENTS - 1) {
+        if (i > 0 && i < MAX_EVENTS - 1 && i != targetEvent) {
             // Create dependencies to/from target event
             CHECK_ZE(zeCommandListAppendBarrier(cmdList, events[targetEvent], 1, &events[i]));
             
