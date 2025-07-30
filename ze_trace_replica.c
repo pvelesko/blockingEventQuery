@@ -311,6 +311,7 @@ int main() {
     long start_time = get_time_us();
     
     result = zeEventQueryStatus(events[1]);  // Query the original barrier event (should be fast now)
+    printf("zeEventQueryStatus result: %d\n", result);
     
     long end_time = get_time_us();
     long elapsed_us = end_time - start_time;
