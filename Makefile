@@ -26,13 +26,16 @@ run:
 	./test
 
 trace:
-	iprof -m full --no-analysis ./test
-	iprof -t -r > original.trace
+	iprof -m full --no-analysis ./test ; iprof -t -r > original.trace
+	
 
 reproduce:
-	gcc -g -I/usr/local/include ./reproducer.c -L/usr/local/lib -lze_loader -lpthread -ldl -o reproducer
-	iprof -m full --no-analysis ./reproducer
-	iprof -t -r > reproducer.trace
+	gcc -g -I$(ZE_INCLUDE_PATH) ./ze_trace_replica.c $(LIBS) $(LDFLAGS) -ldl -o ze_trace_replica
+	timeout 10 ./ze_trace_replica || echo "Command timed out or failed"
+
+reproduce_traced:
+	gcc -g -I$(ZE_INCLUDE_PATH) ./ze_trace_replica.c $(LIBS) $(LDFLAGS) -ldl -o ze_trace_replica
+	iprof -m full --no-analysis ./ze_trace_replica ; iprof -t -r > reproducer.trace
 
 clean:
 	rm -f test reproducer original.trace reproducer.trace
