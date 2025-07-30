@@ -42,6 +42,11 @@ int main() {
     result = zeDriverGet(&driverCount, NULL);
     CHECK_ZE_RESULT(result, "zeDriverGet count");
     
+    if (driverCount == 0) {
+        printf("ERROR: No Level Zero drivers found\n");
+        exit(1);
+    }
+    
     ze_driver_handle_t hDriver;
     result = zeDriverGet(&driverCount, &hDriver);
     CHECK_ZE_RESULT(result, "zeDriverGet");
@@ -51,8 +56,14 @@ int main() {
     result = zeDeviceGet(hDriver, &deviceCount, NULL);
     CHECK_ZE_RESULT(result, "zeDeviceGet count");
     
+    if (deviceCount == 0) {
+        printf("ERROR: No Level Zero devices found\n");
+        exit(1);
+    }
+    
     ze_device_handle_t hDevice;
-    result = zeDeviceGet(hDriver, &deviceCount, &hDevice);
+    uint32_t getDeviceCount = 1;  // We only want to get the first device
+    result = zeDeviceGet(hDriver, &getDeviceCount, &hDevice);
     CHECK_ZE_RESULT(result, "zeDeviceGet");
     
     // Create context
